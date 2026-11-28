@@ -21,7 +21,7 @@
 // files in this repository (copy + dossier from bytes), so two runs write
 // the same bytes. Wall budget is 10 seconds; this finishes in well under one.
 
-import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildDossier } from "./vendor/makefun-frontend.ts";
@@ -36,33 +36,42 @@ const DOSSIER_OPTIONS = {
   app_max_bytes: 16777216,
 };
 
+// Copies a tree in ONE pass and returns the file count — counted while
+// copying, so the grade run never re-walks the output just to count it.
+// (The 28 Nov grade run hit the 10 s wall at 10,002 ms on a program that
+// runs in ~0.3 s locally; the profile shows no slow step, so the repair
+// also strips every redundant filesystem walk to leave maximum headroom.)
 function copyTree(from, to) {
   mkdirSync(to, { recursive: true });
-  cpSync(from, to, { recursive: true });
-}
-
-function countFiles(dir) {
   let n = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const p = join(dir, entry.name);
-    n += entry.isDirectory() ? countFiles(p) : 1;
+  for (const entry of readdirSync(from, { withFileTypes: true })) {
+    const src = join(from, entry.name);
+    const dst = join(to, entry.name);
+    if (entry.isDirectory()) {
+      n += copyTree(src, dst);
+    } else if (entry.isFile()) {
+      copyFileSync(src, dst);
+      n++;
+    }
   }
   return n;
 }
 
 function main() {
+  const t0 = Date.now();
   mkdirSync(outputDir, { recursive: true });
-  copyTree(join(repoRoot, "app"), join(outputDir, "app"));
+  const appFiles = copyTree(join(repoRoot, "app"), join(outputDir, "app"));
   const shots = join(repoRoot, "screenshots");
+  let shotFiles = 0;
   if (existsSync(shots) && statSync(shots).isDirectory()) {
-    copyTree(shots, join(outputDir, "screenshots"));
+    shotFiles = copyTree(shots, join(outputDir, "screenshots"));
   } else {
     mkdirSync(join(outputDir, "screenshots"), { recursive: true });
   }
+  console.error(`Checked Friday: copy done in ${Date.now() - t0} ms`);
   const dossier = buildDossier(outputDir, DOSSIER_OPTIONS);
   writeFileSync(join(outputDir, "dossier.json"), dossier);
-  const appFiles = countFiles(join(outputDir, "app"));
-  const shotFiles = readdirSync(join(outputDir, "screenshots")).filter((f) => !f.startsWith(".")).length;
+  console.error(`Checked Friday: dossier done in ${Date.now() - t0} ms`);
   console.log(`Checked Friday: ${appFiles} app files, ${shotFiles} screenshots, dossier ${dossier.length} bytes -> ${outputDir}`);
 }
 
